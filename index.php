@@ -95,7 +95,7 @@ if (file_exists($logoFile)) {
 
 <head>
     <meta charset="UTF-8">
-    <title>MOTO RADAR</title>
+    <title>Moto Radar</title>
     <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700;800&family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <link rel="shortcut icon" href="<?= htmlspecialchars($logoUrl) ?>" type="image/x-icon">
@@ -250,7 +250,7 @@ if (file_exists($logoFile)) {
         }
 
         .card-title {
-            font-size: 20px;
+            font-size: 1.25rem;
             font-weight: 700;
             color: #1a2e3f;
             margin-bottom: 10px;
@@ -284,8 +284,9 @@ if (file_exists($logoFile)) {
         }
 
         .card-description {
+            /* color: #4b5563; */
             color: #4b5563;
-            font-size: 14px;
+            font-size: 1rem;
             line-height: 1.6;
             margin-bottom: 20px;
             flex: 1;
@@ -301,7 +302,7 @@ if (file_exists($logoFile)) {
             gap: 8px;
             color: #065f46;
             font-weight: 700;
-            font-size: 14px;
+            font-size: 0.95rem;
             text-decoration: none;
             padding: 10px 0;
             border-top: 1px solid #e5e7eb;
@@ -426,7 +427,7 @@ if (file_exists($logoFile)) {
                     <?php endif; ?>
                 </div>
                 <div class="leading-tight">
-                    <div class="heading-font text-2xl font-bold uppercase tracking-tight text-green-800">MOTO RADAR</div>
+                    <div class="heading-font text-2xl font-bold tracking-tight text-green-800">Moto Radar</div>
                 </div>
             </div>
         </div>
@@ -458,7 +459,7 @@ if (file_exists($logoFile)) {
                                     <img src="<?= htmlspecialchars($hoy['imagen']) ?>" alt="<?= htmlspecialchars($hoy['titulo']) ?>" class="card-image">
                                 <?php else: ?>
                                     <div class="w-full h-full bg-gradient-to-br from-green-100 to-green-200 flex items-center justify-center">
-                                        <span class="text-green-600 font-bold text-lg">MOTO RADAR</span>
+                                        <span class="text-green-600 font-bold text-lg">Moto Radar</span>
                                     </div>
                                 <?php endif; ?>
                                 <div class="card-overlay"></div>
@@ -471,7 +472,7 @@ if (file_exists($logoFile)) {
                                     <?php if (!empty($hoy['fecha']) && $hoy['fecha'] === $fechaHoy): ?>
                                         <span class="card-new-badge">
                                             <span class="h-2 w-2 rounded-full bg-white animate-pulse"></span>
-                                            NUEVO
+                                            Nuevo
                                         </span>
                                     <?php endif; ?>
                                 </div>
@@ -517,7 +518,8 @@ if (file_exists($logoFile)) {
         <div id="historial">
             <h2 class="heading-font text-3xl font-bold text-gray-800 mb-8 flex items-center">
                 <span class="bg-gray-400 w-2 h-8 rounded-full mr-3"></span>
-                Historial — <?= ucfirst($categoriaSeleccionada) ?> anteriores
+                Historial — <?= ucfirst($categoriaSeleccionada) ?> 
+                <!-- anteriores -->
             </h2>
             
             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
@@ -528,7 +530,7 @@ if (file_exists($logoFile)) {
                                 <img src="<?= htmlspecialchars($a['image']) ?>" alt="<?= htmlspecialchars($a['title']) ?>" class="card-image">
                             <?php else: ?>
                                 <div class="w-full h-full bg-gradient-to-br from-gray-100 to-gray-200 flex items-center justify-center">
-                                    <span class="text-gray-600 font-bold text-lg">MOTO RADAR</span>
+                                    <span class="text-gray-600 font-bold text-lg">Moto Radar</span>
                                 </div>
                             <?php endif; ?>
                             <div class="card-overlay"></div>
@@ -588,12 +590,12 @@ if (file_exists($logoFile)) {
 
     <!-- FOOTER -->
     <footer class="mt-16 bg-white border-t border-green-100 py-10">
-        <div class="max-w-6xl mx-auto px-6 flex flex-col items-center gap-4">
+        <!-- <div class="max-w-6xl mx-auto px-6 flex flex-col items-center gap-4">
             <div class="flex items-center gap-3">
                 <span class="heading-font text-lg font-bold text-green-800">MOTO RADAR</span>
             </div>
             <p class="text-sm text-gray-500">• Información legal para motociclistas</p>
-            <p class="text-xs text-gray-400">© 2026 MOTO RADAR</p>
+            <p class="text-xs text-gray-400">© 2026 MOTO RADAR</p> -->
         </div>
     </footer>
 

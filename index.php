@@ -1,437 +1,615 @@
-<!doctype html>
-<html lang="es">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>MotoRadar</title>
-  <link rel="shortcut icon" href="logo.png" type="image/x-icon">
-  <link rel="apple-touch-icon" href="logo.png" type="image/x-icon">
-  <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700;800&family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
-  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
-  <style>
-    body {
-      font-family: 'Inter', system-ui, -apple-system, sans-serif;
-    }
-    h1, h2, h3, .heading-font {
-      font-family: 'Oswald', sans-serif;
-    }
-  </style>
-</head>
-<body class="bg-gray-50 text-gray-800">
-
 <?php
-// Configuración
-// cae0d16c92d0ada9a3383ac286e831cf
-$API_TOKEN = '8d731d0bd864989373c4ed430698d7a2';
-$query = isset($_GET['q']) && $_GET['q'] !== '' ? $_GET['q'] : 'para motos';
-$lang = 'es';
-$country = 'pe';
-$max = 10;
+// Obtener la categoría seleccionada
+$categoriaSeleccionada = $_GET['categoria'] ?? 'noticias';
 
-function fetchNews($token, $q, $lang, $country, $max) {
-    $url = 'https://gnews.io/api/v4/search?token=' . urlencode($token)
-         . '&q=' . urlencode($q)
-         . '&lang=' . urlencode($lang)
-         . '&country=' . urlencode($country)
-         . '&max=' . intval($max);
+// Conexión
+require_once 'config.php';
+$pdo = conexion_postgres();
 
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, $url);
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 10);
-    $resp = curl_exec($ch);
-    $err = curl_error($ch);
-    curl_close($ch);
+// Paginación para historial (solo historial usa paginación)
+$paginaActual = isset($_GET['pagina']) ? max(1, (int)$_GET['pagina']) : 1;
+$limite = 6;
+$offset = ($paginaActual - 1) * $limite;
 
-    if ($resp === false) {
-        return ['error' => $err ?: 'Error desconocido'];
+// Fecha de hoy
+$fechaHoy = date('Y-m-d');
+// $fechaHoy = date('2026-03-01');
+
+// TODAS las categorías: mostrar últimas 6 artículos como sección principal
+$sqlLatest = "SELECT * FROM noticias_historial WHERE lower(categoria) LIKE :categoria ORDER BY fecha DESC LIMIT :limite";
+$stmtLatest = $pdo->prepare($sqlLatest);
+$stmtLatest->bindValue(':categoria', "%$categoriaSeleccionada%", PDO::PARAM_STR);
+$stmtLatest->bindValue(':limite', $limite, PDO::PARAM_INT);
+$stmtLatest->execute();
+$displayHoy = $stmtLatest->fetchAll(PDO::FETCH_ASSOC);
+
+// Obtener artículos de hoy para marcar con "NUEVO" (solo para Noticias)
+$articulosHoy = [];
+$showHoy = strtolower($categoriaSeleccionada) === 'noticias';
+if ($showHoy) {
+    $sqlHoy = "SELECT titulo FROM noticias_historial WHERE lower(categoria) LIKE :categoria AND fecha = :fechaHoy";
+    $stmtHoy = $pdo->prepare($sqlHoy);
+    $stmtHoy->bindValue(':categoria', "%$categoriaSeleccionada%", PDO::PARAM_STR);
+    $stmtHoy->bindValue(':fechaHoy', $fechaHoy, PDO::PARAM_STR);
+    $stmtHoy->execute();
+    $articulosHoy = array_column($stmtHoy->fetchAll(PDO::FETCH_ASSOC), 'titulo');
+}
+
+// Obtener títulos de artículos ya mostrados en la sección principal para evitar duplicados
+$titulosExcluidos = array_column($displayHoy, 'titulo');
+$excludeCondition = '';
+$params = ['categoria' => "%$categoriaSeleccionada%"];
+
+if (!empty($titulosExcluidos)) {
+    // Excluir por título para evitar artículos duplicados
+    $placeholders = [];
+    foreach ($titulosExcluidos as $idx => $titulo) {
+        $key = ':titulo_' . $idx;
+        $placeholders[] = $key;
+        $params[$key] = $titulo;
     }
-
-    $data = json_decode($resp, true);
-    if (!$data) return ['error' => 'No se pudo decodificar respuesta JSON'];
-    return $data;
+    $excludeCondition = " AND titulo NOT IN (" . implode(',', $placeholders) . ")";
 }
 
-$news = fetchNews($API_TOKEN, $query, $lang, $country, $max);
+// Contar total de artículos del historial para paginación (sin los de la sección principal)
+$sqlTotal = "SELECT COUNT(*) AS total FROM noticias_historial WHERE lower(categoria) LIKE :categoria" . $excludeCondition;
+$stmtTotal = $pdo->prepare($sqlTotal);
+$stmtTotal->execute($params);
+$totalArticulos = (int)($stmtTotal->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
+$totalPaginas = $totalArticulos ? (int)ceil($totalArticulos / $limite) : 1;
 
-// Si la API falla (error, límite, o devuelve 0 artículos), usar automáticamente
-// el historial guardado para que la página no se rompa.
-$usedSavedFallback = false;
-if (isset($news['error']) || !isset($news['articles']) || !is_array($news['articles']) || count($news['articles']) === 0) {
-  $fallback = fetchSavedArticlesFromDb($max);
-  if (!empty($fallback)) {
-    $news['articles'] = $fallback;
-    $news['__fallback_from_historial'] = true;
-    $usedSavedFallback = true;
-    error_log('GNews API fallo o vacío — usando historial como fallback');
-  } else {
-    // Mantener el error original si no hay historial disponible
-    error_log('GNews API fallo y no hay historial disponible');
-  }
+// Consultar historial según página (máx. 6 por página), excluyendo los de la sección principal
+$sqlHist = "SELECT * FROM noticias_historial WHERE lower(categoria) LIKE :categoria" . $excludeCondition . " ORDER BY fecha DESC LIMIT :limite OFFSET :offset";
+$stmtHist = $pdo->prepare($sqlHist);
+$allParams = array_merge($params, [':limite' => $limite, ':offset' => $offset]);
+foreach ($allParams as $key => $value) {
+    $stmtHist->bindValue($key, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
+}
+$stmtHist->execute();
+$rows = $stmtHist->fetchAll(PDO::FETCH_ASSOC);
+
+// Normalizar los campos para usar en plantilla
+$allArticles = [];
+foreach ($rows as $r) {
+    $allArticles[] = [
+        'publicado' => $r['fecha'] ?? '',
+        'image' => $r['imagen'] ?? '',
+        'title' => $r['titulo'] ?? ($r['title'] ?? ''),
+        'description' => $r['resumen'] ?? ($r['description'] ?? ''),
+        'link' => $r['link'] ?? '#',
+        'source' => $r['diario'] ?? '',
+    ];
 }
 
-// Conexión a la base de datos y función para guardar historial
-require_once __DIR__ . '/config.php';
-
-function saveArticlesToDb(array $items)
-{
-  if (empty($items)) return 0;
-  try {
-    $pdo = conexion_postgres();
-    $pdo->beginTransaction();
-    $sql = 'INSERT INTO noticias_historial (id, titulo, link, fecha, diario, resumen, imagen) VALUES (:id, :titulo, :link, :fecha, :diario, :resumen, :imagen) ON CONFLICT (id) DO NOTHING';
-    $stmt = $pdo->prepare($sql);
-    $inserted = 0;
-    foreach ($items as $it) {
-      $id = isset($it['id']) ? (string)$it['id'] : null;
-      if (!$id) continue;
-      $titulo = isset($it['title']) ? mb_substr($it['title'], 0, 1000) : null;
-      $link = isset($it['url']) ? $it['url'] : null;
-      $fecha = null;
-      if (isset($it['publishedAt']) && !empty($it['publishedAt'])) {
-        try {
-          $dtt = parse_published_local($it['publishedAt']);
-          if ($dtt) $fecha = $dtt->format('Y-m-d');
-        } catch (Exception $e) { $fecha = null; }
-      }
-      $diario = isset($it['source']['name']) ? $it['source']['name'] : null;
-      $resumen = isset($it['description']) ? mb_substr($it['description'], 0, 4000) : null;
-      $imagen = isset($it['image']) ? $it['image'] : null;
-
-      $stmt->execute([
-        ':id' => $id,
-        ':titulo' => $titulo,
-        ':link' => $link,
-        ':fecha' => $fecha,
-        ':diario' => $diario,
-        ':resumen' => $resumen,
-        ':imagen' => $imagen
-      ]);
-      if ($stmt->rowCount() > 0) $inserted++;
-    }
-    $pdo->commit();
-    return $inserted;
-  } catch (Exception $e) {
-    if (isset($pdo) && $pdo->inTransaction()) $pdo->rollBack();
-    error_log('Guardar historial error: ' . $e->getMessage());
-    return 0;
-  }
+// Preparar URL del logo con cache-busting (usa filemtime si el archivo existe)
+$logoFile = __DIR__ . './logo.ico';
+$logoUrl = 'logo.ico';
+if (file_exists($logoFile)) {
+    $logoUrl = 'logo.ico?v=' . filemtime($logoFile);
 }
 
-// Helper: convertir publishedAt UTC -> America/Lima
-function parse_published_local($iso)
-{
-  if (empty($iso)) return null;
-  try {
-    // Si la cadena ISO contiene información de zona (Z o +HH:MM / -HH:MM), dejar que DateTime la use.
-    // Si no contiene zona, asumimos que viene en UTC.
-    $hasTz = preg_match('/Z$|[+\-]\d{2}:?\d{2}$/i', $iso);
-    if ($hasTz) {
-      $dt = new DateTime($iso);
-    } else {
-      $dt = new DateTime($iso, new DateTimeZone('UTC'));
-    }
-    $dt->setTimezone(new DateTimeZone('America/Lima'));
-    return $dt;
-  } catch (Exception $e) {
-    return null;
-  }
-}
-
-// Recuperar artículos guardados en Postgres (mapear al formato de API)
-function fetchSavedArticlesFromDb($limit = 20)
-{
-  try {
-    $pdo = conexion_postgres();
-    $sql = 'SELECT id, titulo, link, fecha, diario, resumen, imagen FROM noticias_historial ORDER BY fecha DESC, id DESC LIMIT :lim';
-    $stmt = $pdo->prepare($sql);
-    $stmt->bindValue(':lim', (int)$limit, PDO::PARAM_INT);
-    $stmt->execute();
-    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    $out = [];
-    foreach ($rows as $r) {
-      $publishedAt = null;
-      if (!empty($r['fecha'])) {
-        // La columna `fecha` almacena solo la fecha (Y-m-d).
-        // Para evitar desplazamientos al parsear y convertir zonas, añadimos el tiempo
-        // y el offset de Lima (-05:00) al campo publishedAt.
-        $publishedAt = $r['fecha'] . 'T00:00:00-05:00';
-      }
-      $out[] = [
-        'id' => $r['id'],
-        'title' => $r['titulo'],
-        'url' => $r['link'],
-        'publishedAt' => $publishedAt,
-        'source' => ['name' => $r['diario']],
-        'description' => $r['resumen'],
-        'image' => $r['imagen']
-      ];
-    }
-    return $out;
-  } catch (Exception $e) {
-    error_log('fetchSavedArticlesFromDb error: ' . $e->getMessage());
-    return [];
-  }
-}
-
-// Filtrar noticias por la fecha actual (en zona America/Lima)
-$articles_for_filter = isset($news['articles']) && is_array($news['articles']) ? $news['articles'] : [];
-// Excluir artículos cuyo `source.name` indique "Infobae" (solo por el campo JSON source.name)
-$articles_for_filter = array_values(array_filter($articles_for_filter, function($a){
-  $s = mb_strtolower($a['source']['name'] ?? '');
-  return mb_stripos($s, 'infobae') === false;
-}));
-$today = (new DateTime('now', new DateTimeZone('America/Lima')))->format('Y-m-d');
-$todayArticles = array_filter($articles_for_filter, function($article) use ($today) {
-  if (!isset($article['publishedAt']) || empty($article['publishedAt'])) return false;
-  $dt = parse_published_local($article['publishedAt']);
-  if (!$dt) return false;
-  return $dt->format('Y-m-d') === $today;
-});
-$todayArticles = array_values($todayArticles);
-
-// Guardar siempre (sin duplicados gracias a ON CONFLICT) las primeras N noticias en el historial
-// Pero si estamos usando el historial como fallback (API falló), no re-guardamos
-try {
-  $toSave = array_slice($articles_for_filter, 0, 20);
-  if (!empty($toSave) && empty($usedSavedFallback)) {
-    saveArticlesToDb($toSave);
-  }
-} catch (Exception $e) { error_log('saveArticlesToDb fallo: '.$e->getMessage()); }
-
-// Recuperar historial guardado para mostrar en el sitio (siempre disponible)
-$savedArticles = fetchSavedArticlesFromDb(20);
-
-// Variables de diagnóstico (visibles con ?debug=1)
-$saved_count = is_array($savedArticles) ? count($savedArticles) : 0;
-$saved_preview = array_slice(is_array($savedArticles) ? $savedArticles : [], 0, 10);
-$today_count = is_array($todayArticles) ? count($todayArticles) : 0;
-$today_preview = array_slice(is_array($todayArticles) ? $todayArticles : [], 0, 10);
 ?>
 
-<!-- HEADER MEJORADO - SOLO TAILWIND -->
-<header class="bg-white border-b-2 border-green-200 shadow-sm">
-  <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
-    <div class="flex items-center space-x-4">
-      <div class="flex h-15 w-15 ">  <!--items-center justify-center rounded-lg bg-green-700 border-2 border-green-600 shadow-md -->
-        <img src="logo.png" alt="icono" width="70" height="70" class="object-contain">
-      </div>      
-      <div class="leading-tight">
-        <div class="heading-font text-2xl font-bold uppercase tracking-tight text-green-800">Cayman Moto Legal News</div>
-        <!-- <div class="text-xs text-gray-500 font-medium">Leyes y Normas - Peru</div> -->
-      </div>
-    </div>
-    <div class="flex items-center gap-3">
-      <!-- <span class="hidden sm:inline-flex items-center gap-1.5 rounded-full bg-green-50 px-4 py-1.5 text-sm font-medium text-green-700 border border-green-200">
-        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4">
-          <circle cx="18.5" cy="17.5" r="3.5"></circle>
-          <circle cx="5.5" cy="17.5" r="3.5"></circle>
-          <circle cx="15" cy="5" r="1"></circle>
-          <path d="M12 17.5V14l-3-3 4-3 2 3h2"></path>
-        </svg>
-        SOAT • Normas • Tránsito
-      </span>
-      <span class="inline-flex items-center gap-1.5 rounded-full bg-green-100 px-4 py-1.5 text-sm font-medium text-green-800 border border-green-300">
-        <span class="h-2 w-2 rounded-full bg-green-600 animate-pulse"></span>
-        En vivo
-      </span> -->
-    </div>
-  </div>
-</header>
+<!DOCTYPE html>
+<html lang="es">
 
-<main class="max-w-6xl mx-auto px-6 py-8">
+<head>
+    <meta charset="UTF-8">
+    <title>MOTO RADAR</title>
+    <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700;800&family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link rel="shortcut icon" href="<?= htmlspecialchars($logoUrl) ?>" type="image/x-icon">
+    <link rel="apple-touch-icon" href="<?= htmlspecialchars($logoUrl) ?>" type="image/x-icon">
 
-<?php if (isset($news['error'])): ?>
-  <div class="bg-red-50 border-l-4 border-red-500 text-red-700 p-4 rounded-lg shadow">Error: <?=htmlspecialchars($news['error'])?></div>
-<?php else: ?>
-  <?php $articles = $articles_for_filter; ?>
-  <?php
-    // Asegurar que no queden fuentes 'infobae' por si acaso
-    $articles = array_values(array_filter($articles, function($a){
-      $s = mb_strtolower($a['source']['name'] ?? '');
-      return mb_stripos($s, 'infobae') === false;
-    }));
-    $todayArticles = array_values(array_filter($todayArticles, function($a){
-      $s = mb_strtolower($a['source']['name'] ?? '');
-      return mb_stripos($s, 'infobae') === false;
-    }));
-  ?>
-  <?php if (count($articles) > 0 && count($todayArticles) > 0): ?>
-    <?php $main = array_shift($todayArticles); $main_dt = parse_published_local($main['publishedAt'] ?? null); $main_date = $main_dt ? $main_dt->format('Y-m-d') : null; ?>
+    <style>
+        .heading-font {
+            font-family: 'Oswald', sans-serif
+        }
 
-    <!-- TÍTULO PRINCIPAL - TAMAÑOS MEJORADOS -->
-    <div class="text-center mb-10">
-      <div class="mx-auto w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mb-4 border-2 border-green-300">
-        <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-green-700 h-8 w-8">
-          <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"></path>
-        </svg>
-      </div>
-      <h1 class="heading-font text-5xl md:text-6xl font-extrabold tracking-tight mb-3 text-gray-900">LEYES, NORMAS Y <span class="text-green-700">SOAT</span></h1>
-      <p class="text-base text-gray-600 max-w-3xl mx-auto leading-relaxed">Información actualizada sobre leyes de tránsito, normas para motociclistas, SOAT y regulaciones vigentes en Perú.</p>
-    </div>
+        body {
+            font-family: Inter, system-ui, -apple-system, Arial, sans-serif;
+            background: #f0f9f4;
+            color: #111827
+        }
 
-    <!-- GRID PRINCIPAL -->
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start mb-12">
-      <!-- NOTICIA DESTACADA -->
-      <div class="lg:col-span-2">
-        <div class="bg-white rounded-2xl overflow-hidden shadow-xl border border-gray-100 flex flex-col lg:flex-row hover:shadow-2xl transition-shadow">
-          <div class="lg:w-3/5">
-            <?php if (!empty($main['image'])): ?>
-              <img src="<?=htmlspecialchars($main['image'])?>" alt="" class="w-full h-96 lg:h-full object-cover">
-            <?php else: ?>
-              <div class="w-full h-96 lg:h-full bg-gray-200 flex items-center justify-center text-gray-400">Sin imagen</div>
-            <?php endif; ?>
-          </div>
-          <div class="p-7 lg:w-2/5 flex flex-col justify-between">
-            <div>
-              <div class="flex items-center gap-2 mb-4">
-                <span class="bg-green-700 text-white px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wide inline-block">DESTACADO</span>
-                <?php if ($main_date === $today): ?>
-                  <span class="bg-green-100 text-green-800 px-3 py-1 rounded-full text-xs font-semibold uppercase">NUEVO</span>
-                <?php endif; ?>
-              </div>
-              <p class="text-xs text-gray-500 mb-3">Publicado el <?= $main_dt ? htmlspecialchars($main_dt->format('d/m/Y')) : 'Fecha no disponible' ?></p>
-              <h2 class="heading-font text-2xl lg:text-3xl font-bold leading-tight mb-4 text-gray-900"><?=htmlspecialchars($main['title'])?></h2>
-              <p class="text-gray-600 text-base mb-5 leading-relaxed"><?=htmlspecialchars(substr($main['description'] ?? '', 0, 200))?><?=(strlen($main['description'] ?? '')>200?'...':'')?></p>
-            </div>
-            <div class="flex items-center justify-between border-t border-gray-100 pt-4">
-              <span class="text-sm font-semibold text-green-700 uppercase tracking-wider"><?=htmlspecialchars($main['source']['name'] ?? 'Fuente')?></span>
-              <a href="<?=htmlspecialchars($main['url'])?>" target="_blank" class="text-green-700 font-bold hover:text-green-800 text-base">Leer más →</a>
-            </div>
-          </div>
-        </div>
-      </div>
+        .container {
+            max-width: 1100px;
+            margin: 28px auto;
+            padding: 0 16px
+        }
 
-      <!-- Aside 'MÁS NOTICIAS LEGALES' eliminado según petición del usuario -->
-    </div>
+        .heading {
+            font-family: Oswald, 'Segoe UI', Arial, sans-serif;
+            font-size: 28px;
+            color: #065f46;
+            margin: 6px 0 18px
+        }
 
-    <!-- SECCIÓN DE NOTICIAS ADICIONALES (si hay más de 3) -->
-    <?php if (count($todayArticles) > 2): ?>
-    <section class="mt-12">
-      <h2 class="heading-font text-2xl font-bold text-gray-900 mb-6 flex items-center">
-        <span class="bg-green-700 w-1.5 h-7 rounded-full inline-block mr-3"></span>
-        MÁS NOTICIAS DE HOY
-      </h2>
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <?php foreach (array_slice($todayArticles, 2) as $a): ?>
-          <article class="bg-white rounded-xl p-5 shadow-md border border-gray-100 hover:shadow-xl transition flex flex-col">
-            <div class="flex gap-4">
-              <?php if (!empty($a['image'])): ?>
-                <div class="w-32 h-24 flex-shrink-0">
-                  <img src="<?=htmlspecialchars($a['image'])?>" class="w-full h-full object-cover rounded-lg" alt="">
-                </div>
-              <?php else: ?>
-                <div class="w-32 h-24 bg-gray-100 rounded-lg flex-shrink-0"></div>
-              <?php endif; ?>
-              <div class="flex-1">
-                <div class="flex items-center justify-between mb-1">
-                  <div class="text-xs font-bold text-green-700 uppercase"><?=htmlspecialchars($a['source']['name'] ?? 'Fuente')?></div>
-                  <?php $dt = parse_published_local($a['publishedAt'] ?? null); if ($dt): ?>
-                    <div class="text-xs text-gray-400"><?=htmlspecialchars($dt->format('d/m/Y'))?></div>
-                  <?php endif; ?>
-                </div>
-                <?php $badge_dt = parse_published_local($a['publishedAt'] ?? null); $badge_d = $badge_dt ? $badge_dt->format('Y-m-d') : null; ?>
-                <div class="mb-2">
-                  <?php if ($badge_d === $today): ?>
-                      <span class="bg-green-100 text-green-800 px-3 py-0.5 rounded-full text-xs font-semibold uppercase">NUEVO</span>
-                  <?php endif; ?>
-                </div>
-                <a href="<?=htmlspecialchars($a['url'])?>" target="_blank" class="heading-font font-bold text-base text-gray-900 leading-tight block mb-2 hover:text-green-700"><?=htmlspecialchars($a['title'])?></a>
-                <p class="text-sm text-gray-600"><?=htmlspecialchars(substr($a['description'] ?? '', 0, 90))?><?=(strlen($a['description'] ?? '')>90?'...':'')?></p>
-              </div>
-            </div>
-          </article>
-        <?php endforeach; ?>
-      </div>
-    </section>
-    <?php endif; ?>
+        /* ESTILOS ESPECTACULARES PARA LAS CARDS */
+        .card-espectacular {
+            background: #ffffff;
+            border-radius: 20px;
+            overflow: hidden;
+            box-shadow: 0 10px 30px -5px rgba(6, 95, 70, 0.1);
+            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            border: 1px solid rgba(6, 95, 70, 0.1);
+            position: relative;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+        }
 
-  <?php else: ?>
-    <div class="bg-white p-8 rounded-2xl shadow-lg text-center text-gray-500 mt-8 border border-gray-100">
-      <svg xmlns="http://www.w3.org/2000/svg" class="h-12 w-12 mx-auto text-gray-400 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
-      </svg>
-      <p class="text-lg font-medium">No se encontraron noticias de hoy</p>
-      <!-- <p class="text-sm text-gray-500 mt-1">Intenta más tarde o revisa otras fuentes</p> -->
-    </div>
-  <?php endif; ?>
+        .card-espectacular:hover {
+            transform: translateY(-10px) scale(1.02);
+            box-shadow: 0 30px 40px -10px rgba(6, 95, 70, 0.3);
+            border-color: #065f46;
+        }
 
-  <?php if (count($savedArticles) > 0): ?>
-    <?php if (isset($_GET['debug']) && $_GET['debug'] === '1'): ?>
-      <div class="bg-yellow-50 p-4 rounded mb-6 text-sm text-yellow-800 border border-yellow-200">
-        <div class="font-semibold">DEBUG: Estado de artículos</div>
-        <div>Saved count: <?=htmlspecialchars((string)$saved_count)?></div>
-        <div>Today count: <?=htmlspecialchars((string)$today_count)?></div>
-        <div class="mt-2">Últimas guardadas (preview):</div>
-        <ul class="list-disc list-inside text-xs mt-1">
-          <?php foreach ($saved_preview as $p): $pd = parse_published_local($p['publishedAt'] ?? null); ?>
-            <li><?=htmlspecialchars(($pd?$pd->format('d/m/Y'):'-') . ' — ' . ($p['id'] ?? '') . ' — ' . mb_substr($p['title'] ?? '',0,80))?></li>
-          <?php endforeach; ?>
-        </ul>
-      </div>
-    <?php endif; ?>
-    <section class="mt-8">
-      <h2 class="heading-font text-2xl font-bold text-gray-900 mb-6 flex items-center">
-        <span class="bg-green-700 w-1.5 h-7 rounded-full inline-block mr-3"></span>
-        Historial — Noticias anteriores
-      </h2>
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <?php foreach (array_slice($savedArticles, 0, 8) as $a): ?>
-          <article class="bg-white rounded-xl p-5 shadow-md border border-gray-100 hover:shadow-xl transition flex">
-            <div class="w-28 h-20 flex-shrink-0 mr-4">
-              <?php if (!empty($a['image'])): ?>
-                <img src="<?=htmlspecialchars($a['image'])?>" class="w-full h-full object-cover rounded-lg" alt="">
-              <?php else: ?>
-                <div class="w-full h-full bg-gray-100 rounded-lg"></div>
-              <?php endif; ?>
-            </div>
-            <div class="flex-1">
-              <?php $dt = parse_published_local($a['publishedAt'] ?? null); $bdt = $dt ? $dt->format('Y-m-d') : null; ?>
-              
-        <div class="flex items-center justify-between mb-1">
-                <div>
-                    <div class="text-xs font-bold text-green-700 uppercase">
-                    <?=htmlspecialchars($a['source']['name'] ?? '')?>
-                    </div>
-                    <?php if ($dt): ?>
-                    <div class="text-xs text-gray-400 mt-1">
-                      <?=htmlspecialchars($dt->format('d/m/Y'))?>
-                    </div>
+        .card-espectacular::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: linear-gradient(90deg, #065f46, #10b981, #065f46);
+            transform: scaleX(0);
+            transition: transform 0.4s ease;
+        }
+
+        .card-espectacular:hover::before {
+            transform: scaleX(1);
+        }
+
+        .card-image-container {
+            position: relative;
+            overflow: hidden;
+            height: 200px;
+        }
+
+        .card-image {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transition: transform 0.6s ease;
+        }
+
+        .card-espectacular:hover .card-image {
+            transform: scale(1.1);
+        }
+
+        .card-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(to bottom, transparent 0%, rgba(0, 0, 0, 0.5) 100%);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .card-espectacular:hover .card-overlay {
+            opacity: 1;
+        }
+
+        .card-badge {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            z-index: 10;
+        }
+
+        .card-source {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            padding: 6px 12px;
+            border-radius: 30px;
+            font-size: 12px;
+            font-weight: 700;
+            color: #065f46;
+            border: 1px solid #065f46;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+            letter-spacing: 0.5px;
+        }
+
+        .card-new-badge {
+            background: linear-gradient(135deg, #065f46, #10b981);
+            color: white;
+            padding: 6px 15px;
+            border-radius: 30px;
+            font-size: 12px;
+            font-weight: 700;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            box-shadow: 0 4px 15px rgba(6, 95, 70, 0.4);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% {
+                box-shadow: 0 4px 15px rgba(6, 95, 70, 0.4);
+            }
+
+            50% {
+                box-shadow: 0 4px 25px rgba(16, 185, 129, 0.6);
+            }
+
+            100% {
+                box-shadow: 0 4px 15px rgba(6, 95, 70, 0.4);
+            }
+        }
+
+        .card-content {
+            padding: 20px;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: linear-gradient(to bottom, #ffffff, #f9f9f9);
+        }
+
+        .card-title {
+            font-size: 20px;
+            font-weight: 700;
+            color: #1a2e3f;
+            margin-bottom: 10px;
+            line-height: 1.3;
+            transition: color 0.3s ease;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+
+        .card-espectacular:hover .card-title {
+            color: #065f46;
+        }
+
+        .card-date {
+            font-size: 14px;
+            color: #6b7280;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .card-date span {
+            color: #065f46;
+            font-weight: 600;
+            background: #ecfdf5;
+            padding: 2px 8px;
+            border-radius: 20px;
+        }
+
+        .card-description {
+            color: #4b5563;
+            font-size: 14px;
+            line-height: 1.6;
+            margin-bottom: 20px;
+            flex: 1;
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+
+        .card-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            color: #065f46;
+            font-weight: 700;
+            font-size: 14px;
+            text-decoration: none;
+            padding: 10px 0;
+            border-top: 1px solid #e5e7eb;
+            margin-top: auto;
+            transition: all 0.3s ease;
+        }
+
+        .card-link:hover {
+            color: #10b981;
+            gap: 12px;
+        }
+
+        .card-link i {
+            transition: transform 0.3s ease;
+        }
+
+        .card-link:hover i {
+            transform: translateX(5px);
+        }
+
+        .empty-state {
+            background: linear-gradient(135deg, #f9f9f9, #ffffff);
+            border-radius: 30px;
+            padding: 50px;
+            text-align: center;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.05);
+            border: 1px dashed #065f46;
+        }
+
+        .empty-state p:first-of-type {
+            font-size: 24px;
+            font-weight: 700;
+            color: #065f46;
+            margin-bottom: 10px;
+        }
+
+        .category-btn {
+            padding: 12px 28px;
+            border-radius: 50px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+            margin: 0 5px;
+        }
+
+        .category-btn:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.15);
+        }
+
+        .pagination-btn {
+            padding: 10px 18px;
+            border-radius: 50px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+
+        .pagination-btn:hover:not(.active) {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        /* Header / Footer estilo similar a index.php */
+        .app-header {
+            background: #ffffff;
+            border-bottom: 2px solid #d1fae8;
+            box-shadow: 0 4px 20px rgba(6, 95, 70, 0.1);
+        }
+
+        .app-header-inner {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 14px 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 14px
+        }
+
+        .app-header .logo {
+            width: 44px;
+            height: 44px;
+            border-radius: 8px;
+            background: #065f46;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+            font-weight: 700
+        }
+
+        .app-header .title {
+            font-family: Oswald, 'Segoe UI', Arial, sans-serif;
+            color: #065f46;
+            font-size: 18px;
+            font-weight: 700
+        }
+
+        .app-footer {
+            text-align: center;
+            padding: 20px 8px;
+            color: #6b7280;
+            border-top: 1px solid #f3f4f6;
+            margin-top: 28px;
+            font-size: 13px
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- HEADER -->
+    <header class="bg-white border-b-2 border-green-200 shadow-sm">
+        <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+            <div class="flex items-center space-x-4">
+                <div class="flex h-15 w-15 "><!-- <div class="flex h-12 w-12 items-center justify-center rounded-lg  p-1"> -->
+                    <?php if (!empty($logoUrl)): ?>
+                        <img src="logo.png" alt="icono" width="70" height="70" class="object-contain">
+                        <!-- <img src="logo.png" alt="Logo" class="h-auto w-auto max-h-full max-w-full object-contain" /> -->
+                    <?php else: ?>
+                        <div class="h-10 w-10 bg-green-600 rounded-md flex items-center justify-center text-white font-bold">MR</div>
                     <?php endif; ?>
                 </div>
-          <div>
-            <?php if ($bdt === $today): ?>
-            <div class="inline-block bg-green-100 text-green-800 px-3 py-0.5 rounded-full text-xs font-semibold uppercase">
-            NUEVO
+                <div class="leading-tight">
+                    <div class="heading-font text-2xl font-bold uppercase tracking-tight text-green-800">MOTO RADAR</div>
+                </div>
             </div>
+        </div>
+    </header>
+
+    <!-- Botones de categorías -->
+    <div class="container mt-6 text-center">
+        <a href="?categoria=noticias" class="category-btn <?= $categoriaSeleccionada === 'noticias' ? 'bg-green-600 text-white' : 'bg-white text-green-600 border-2 border-green-600' ?>">Noticias</a>
+        <a href="?categoria=blog" class="category-btn <?= $categoriaSeleccionada === 'blog' ? 'bg-green-700 text-white' : 'bg-white text-green-700 border-2 border-green-700' ?>">Blog</a>
+        <a href="?categoria=comercial" class="category-btn <?= $categoriaSeleccionada === 'comercial' ? 'bg-green-800 text-white' : 'bg-white text-green-800 border-2 border-green-800' ?>">Comercial</a>
+    </div>
+
+    <!-- Contenido dinámico -->
+    <div class="container mt-6">
+        <h1 class="heading-font text-5xl font-bold text-gray-900 mb-6 text-center relative inline-block w-full">
+            <span class="relative z-10"><?= ucfirst($categoriaSeleccionada) ?></span>
+            <span class="absolute bottom-0 left-1/2 transform -translate-x-1/2 w-24 h-1 bg-gradient-to-r from-green-400 to-green-600 rounded-full"></span>
+        </h1>
+
+        <!-- NOTICIAS DE HOY -->
+        <div class="mb-12">
+            
+            <?php if (!empty($displayHoy)): ?>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                    <?php foreach ($displayHoy as $hoy): ?>
+                        <article class="card-espectacular">
+                            <div class="card-image-container">
+                                <?php if (!empty($hoy['imagen'])): ?>
+                                    <img src="<?= htmlspecialchars($hoy['imagen']) ?>" alt="<?= htmlspecialchars($hoy['titulo']) ?>" class="card-image">
+                                <?php else: ?>
+                                    <div class="w-full h-full bg-gradient-to-br from-green-100 to-green-200 flex items-center justify-center">
+                                        <span class="text-green-600 font-bold text-lg">MOTO RADAR</span>
+                                    </div>
+                                <?php endif; ?>
+                                <div class="card-overlay"></div>
+
+                                <div class="card-badge flex flex-col gap-2">
+                                    <?php if (!empty($hoy['diario'])): ?>
+                                        <span class="card-source"><?= htmlspecialchars($hoy['diario']) ?></span>
+                                    <?php endif; ?>
+
+                                    <?php if (!empty($hoy['fecha']) && $hoy['fecha'] === $fechaHoy): ?>
+                                        <span class="card-new-badge">
+                                            <span class="h-2 w-2 rounded-full bg-white animate-pulse"></span>
+                                            NUEVO
+                                        </span>
+                                    <?php endif; ?>
+                                </div>
+                            </div>
+
+                            <div class="card-content">
+                                <h3 class="card-title"><?= htmlspecialchars($hoy['titulo']) ?></h3>
+                                <div class="card-date">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                                    </svg>
+                                    <span><?= htmlspecialchars($hoy['fecha']) ?></span>
+                                </div>
+                                <p class="card-description"><?= htmlspecialchars($hoy['resumen']) ?></p>
+                                <a href="<?= htmlspecialchars($hoy['link']) ?>" target="_blank" class="card-link">
+                                    Leer más
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"></path>
+                                    </svg>
+                                </a>
+                            </div>
+                        </article>
+                    <?php endforeach; ?>
+                </div>
+            <?php else: ?>
+                <div class="empty-state">
+                    <div class="text-6xl mb-4">📰</div>
+                    <p class="text-lg font-medium text-gray-700">No se encontraron noticias de hoy</p>
+                    <p class="text-sm text-gray-500">Intenta más tarde o revisa otras fuentes</p>
+                    <div class="mt-6">
+                        <a href="#historial" class="inline-flex items-center gap-2 text-green-600 font-bold hover:text-green-700">
+                            Ver historial de noticias
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                            </svg>
+                        </a>
+                    </div>
+                </div>
             <?php endif; ?>
-          </div>
         </div>
 
-              <a href="<?=htmlspecialchars($a['url'])?>" target="_blank" class="heading-font font-bold text-sm text-gray-900 leading-tight block mb-1 hover:text-green-700"><?=htmlspecialchars($a['title'])?></a>
-              <p class="text-xs text-gray-500"><?=htmlspecialchars(substr($a['description'] ?? '', 0, 100))?><?=(strlen($a['description'] ?? '')>100?'...':'')?></p>
+        <!-- Historial -->
+        <div id="historial">
+            <h2 class="heading-font text-3xl font-bold text-gray-800 mb-8 flex items-center">
+                <span class="bg-gray-400 w-2 h-8 rounded-full mr-3"></span>
+                Historial — <?= ucfirst($categoriaSeleccionada) ?> anteriores
+            </h2>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                <?php foreach ($allArticles as $index => $a): ?>
+                    <article class="card-espectacular" style="animation: fadeInUp 0.5s ease <?= $index * 0.1 ?>s both;">
+                        <div class="card-image-container">
+                            <?php if (!empty($a['image'])): ?>
+                                <img src="<?= htmlspecialchars($a['image']) ?>" alt="<?= htmlspecialchars($a['title']) ?>" class="card-image">
+                            <?php else: ?>
+                                <div class="w-full h-full bg-gradient-to-br from-gray-100 to-gray-200 flex items-center justify-center">
+                                    <span class="text-gray-600 font-bold text-lg">MOTO RADAR</span>
+                                </div>
+                            <?php endif; ?>
+                            <div class="card-overlay"></div>
+
+                            <div class="card-badge">
+                                <?php if (!empty($a['source'])): ?>
+                                    <span class="card-source"><?= htmlspecialchars($a['source']) ?></span>
+                                <?php endif; ?>
+                            </div>
+                        </div>
+
+                        <div class="card-content">
+                            <h3 class="card-title"><?= htmlspecialchars($a['title']) ?></h3>
+                            <div class="card-date">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                                </svg>
+                                <span><?= htmlspecialchars($a['publicado']) ?></span>
+                            </div>
+                            <p class="card-description"><?= htmlspecialchars($a['description']) ?></p>
+                            <a href="<?= htmlspecialchars($a['link']) ?>" target="_blank" class="card-link">
+                                Leer más
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"></path>
+                                </svg>
+                            </a>
+                        </div>
+                    </article>
+                <?php endforeach; ?>
             </div>
-          </article>
-        <?php endforeach; ?>
-      </div>
-    </section>
-  <?php endif; ?>
-<?php endif; ?>
-</main>
 
-<!-- FOOTER MEJORADO -->
-<footer class="mt-16 bg-white border-t border-green-100 py-10">
-  <!-- <div class="max-w-6xl mx-auto px-6 flex flex-col items-center gap-4">
-    <div class="flex items-center gap-3">
-      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-green-700 h-6 w-6">
-        <path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"></path>
-      </svg>
-      <span class="heading-font text-lg font-bold text-green-800">Cayman Moto Legal News</span>
+            <!-- Paginación (solo para historial) -->
+            <?php if ($totalPaginas > 1): ?>
+                <div class="mt-12 flex justify-center items-center space-x-3">
+                    <?php if ($paginaActual > 1): ?>
+                        <a href="?categoria=<?= urlencode($categoriaSeleccionada) ?>&pagina=<?= $paginaActual - 1 ?>" class="pagination-btn bg-white text-gray-700 border border-gray-300 hover:border-green-500 hover:text-green-600">
+                            ← Anterior
+                        </a>
+                    <?php endif; ?>
+
+                    <?php for ($i = 1; $i <= $totalPaginas; $i++): ?>
+                        <a href="?categoria=<?= urlencode($categoriaSeleccionada) ?>&pagina=<?= $i ?>"
+                            class="pagination-btn <?= $i === $paginaActual ? 'bg-green-600 text-white active' : 'bg-white text-gray-700 border border-gray-300 hover:border-green-500 hover:text-green-600' ?>">
+                            <?= $i ?>
+                        </a>
+                    <?php endfor; ?>
+
+                    <?php if ($paginaActual < $totalPaginas): ?>
+                        <a href="?categoria=<?= urlencode($categoriaSeleccionada) ?>&pagina=<?= $paginaActual + 1 ?>" class="pagination-btn bg-white text-gray-700 border border-gray-300 hover:border-green-500 hover:text-green-600">
+                            Siguiente →
+                        </a>
+                    <?php endif; ?>
+                </div>
+            <?php endif; ?>
+        </div>
     </div>
-    <p class="text-sm text-gray-500">• Información legal para motociclistas</p>
-    <p class="text-xs text-gray-400">© 2026 Cayman Moto Legal News - Leyes, Normas y SOAT Perú</p>
-  </div> -->
-</footer>
 
+    <!-- FOOTER -->
+    <footer class="mt-16 bg-white border-t border-green-100 py-10">
+        <div class="max-w-6xl mx-auto px-6 flex flex-col items-center gap-4">
+            <div class="flex items-center gap-3">
+                <span class="heading-font text-lg font-bold text-green-800">MOTO RADAR</span>
+            </div>
+            <p class="text-sm text-gray-500">• Información legal para motociclistas</p>
+            <p class="text-xs text-gray-400">© 2026 MOTO RADAR</p>
+        </div>
+    </footer>
+
+    <style>
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+    </style>
 </body>
+
 </html>

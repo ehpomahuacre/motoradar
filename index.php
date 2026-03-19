@@ -11,99 +11,17 @@ $paginaActual = isset($_GET['pagina']) ? max(1, (int)$_GET['pagina']) : 1;
 $limite = 6;
 $offset = ($paginaActual - 1) * $limite;
 
-// Paginación para sección principal (usar solo cuando se selecciona 'comercial')
-$paginaMain = isset($_GET['pagina_main']) ? max(1, (int)$_GET['pagina_main']) : 1;
-$offsetMain = ($paginaMain - 1) * $limite;
-
-// Calcular total de páginas para la sección principal (todas las categorías usan mismo cálculo)
-$sqlCountMain = "SELECT COUNT(*) AS total FROM noticias_historial WHERE lower(categoria) LIKE :categoria";
-$stmtCountMain = $pdo->prepare($sqlCountMain);
-$stmtCountMain->bindValue(':categoria', "%$categoriaSeleccionada%", PDO::PARAM_STR);
-$stmtCountMain->execute();
-$totalMain = (int)($stmtCountMain->fetch(PDO::FETCH_ASSOC)['total'] ?? 0);
-$totalMainPages = $totalMain ? (int)ceil($totalMain / $limite) : 1;
-
-// Título para la sección secundaria (renombrar "Historial" cuando es comercial)
-$histTitle = $categoriaSeleccionada === 'comercial' ? 'Principales Competidores' : 'Historial';
-
 // Fecha de hoy
 $fechaHoy = date('Y-m-d');
-// $fechaHoy = date('2026-03-04');
+// $fechaHoy = date('2026-03-06');
 
 // TODAS las categorías: mostrar últimas 6 artículos como sección principal
-$sqlLatest = "SELECT * FROM noticias_historial WHERE lower(categoria) LIKE :categoria ORDER BY fecha DESC LIMIT :limite OFFSET :offset";
+$sqlLatest = "SELECT * FROM noticias_historial WHERE lower(categoria) LIKE :categoria ORDER BY fecha DESC LIMIT :limite";
 $stmtLatest = $pdo->prepare($sqlLatest);
 $stmtLatest->bindValue(':categoria', "%$categoriaSeleccionada%", PDO::PARAM_STR);
 $stmtLatest->bindValue(':limite', $limite, PDO::PARAM_INT);
-$stmtLatest->bindValue(':offset', $offsetMain, PDO::PARAM_INT);
 $stmtLatest->execute();
 $displayHoy = $stmtLatest->fetchAll(PDO::FETCH_ASSOC);
-
-// Si la categoría es 'comercial', obtener lista de marcas desde tabla 'competencia'
-$marcas = [];
-$selectedMarca = isset($_GET['marca']) ? trim($_GET['marca']) : '';
-$competidores = [];
-if ($categoriaSeleccionada === 'comercial') {
-    $sqlMarcas = "SELECT DISTINCT marca FROM competencia WHERE marca IS NOT NULL ORDER BY marca";
-    try {
-        $stmtMarcas = $pdo->query($sqlMarcas);
-        $marcas = $stmtMarcas->fetchAll(PDO::FETCH_COLUMN);
-    } catch (Exception $e) {
-        $marcas = [];
-    }
-
-    // Si hay una marca seleccionada, obtener los competidores para esa marca
-    if (!empty($selectedMarca)) {
-        $sqlComp = "SELECT id, marca, modelo, imagen, precio, link FROM competencia WHERE lower(marca) = lower(:marca) ORDER BY id";
-        $stmtComp = $pdo->prepare($sqlComp);
-        $stmtComp->bindValue(':marca', $selectedMarca, PDO::PARAM_STR);
-        $stmtComp->execute();
-        $competidores = $stmtComp->fetchAll(PDO::FETCH_ASSOC);
-    }
-
-    // Responder peticiones AJAX para cargar competidores sin recargar la página
-    if (isset($_GET['ajax_comp']) && $_GET['ajax_comp'] === '1' && $categoriaSeleccionada === 'comercial') {
-        header('Content-Type: text/html; charset=utf-8');
-        if (!empty($competidores)) {
-            foreach ($competidores as $c) {
-                ?>
-                <article class="card-espectacular">
-                    <div class="card-image-container">
-                        <?php if (!empty($c['imagen'])): ?>
-                            <img src="<?= htmlspecialchars($c['imagen']) ?>" alt="<?= htmlspecialchars($c['modelo'] ?? '') ?>" class="card-image">
-                        <?php else: ?>
-                            <div class="w-full h-full bg-gradient-to-br from-gray-100 to-gray-200 flex items-center justify-center">
-                                <span class="text-gray-600 font-bold text-lg">Moto Radar</span>
-                            </div>
-                        <?php endif; ?>
-                        <div class="card-overlay"></div>
-                        <div class="card-badge flex flex-col gap-2">
-                            <?php if (!empty($c['marca'])): ?>
-                                <span class="card-source"><?= htmlspecialchars($c['marca']) ?></span>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-
-                    <div class="card-content">
-                        <h3 class="card-title"><?= htmlspecialchars($c['modelo'] ?? '') ?></h3>
-                        <div class="card-date">
-                            <span><?= htmlspecialchars($c['precio'] ?? '') ?></span>
-                        </div>
-                        <?php if (!empty($c['link'])): ?>
-                            <a href="<?= htmlspecialchars($c['link']) ?>" target="_blank" class="card-link">Ver oferta →</a>
-                        <?php endif; ?>
-                    </div>
-                </article>
-                <?php
-            }
-        } else {
-            ?>
-            <div class="bg-white p-4 rounded-lg text-sm text-gray-600">Selecciona una marca para ver detalles</div>
-            <?php
-        }
-        exit;
-    }
-}
 
 // Obtener artículos de hoy para marcar con "NUEVO" (para todas las categorías)
 $articulosHoy = [];
@@ -112,12 +30,14 @@ $stmtHoy = $pdo->prepare($sqlHoy);
 $stmtHoy->bindValue(':fechaHoy', $fechaHoy, PDO::PARAM_STR);
 $stmtHoy->execute();
 $articulosHoy = $stmtHoy->fetchAll(PDO::FETCH_ASSOC);
+
 // Obtener títulos de artículos ya mostrados en la sección principal para evitar duplicados
 $titulosExcluidos = array_column($displayHoy, 'titulo');
 $excludeCondition = '';
 $params = ['categoria' => "%$categoriaSeleccionada%"];
 
 if (!empty($titulosExcluidos)) {
+    // Excluir por título para evitar artículos duplicados
     $placeholders = [];
     foreach ($titulosExcluidos as $idx => $titulo) {
         $key = ':titulo_' . $idx;
@@ -164,8 +84,82 @@ if (file_exists($logoFile)) {
     $logoUrl = 'logo.ico?v=' . filemtime($logoFile);
 }
 
-?>
+// Código para la sección "Precio" (marcas y competidores)
+$marcas = [];
+$selectedMarca = isset($_GET['marca']) ? trim($_GET['marca']) : '';
+$competidores = [];
 
+if ($categoriaSeleccionada === 'precio') {
+    $sqlMarcas = "SELECT DISTINCT marca FROM competencia WHERE marca IS NOT NULL ORDER BY marca";
+    try {
+        $stmtMarcas = $pdo->query($sqlMarcas);
+        $marcas = $stmtMarcas->fetchAll(PDO::FETCH_COLUMN);
+    } catch (Exception $e) {
+        $marcas = [];
+    }
+
+    // Seleccionar CFMOTO por defecto si no hay marca en la URL
+    if (empty($selectedMarca) && !empty($marcas) && in_array('CFMOTO', $marcas)) {
+        $selectedMarca = 'CFMOTO';
+    }
+
+    // Si hay una marca seleccionada, obtener los competidores para esa marca
+    if (!empty($selectedMarca)) {
+        $sqlComp = "SELECT id, marca, modelo, imagen, precio, link FROM competencia WHERE lower(marca) = lower(:marca) ORDER BY id";
+        $stmtComp = $pdo->prepare($sqlComp);
+        $stmtComp->bindValue(':marca', $selectedMarca, PDO::PARAM_STR);
+        $stmtComp->execute();
+        $competidores = $stmtComp->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    // Responder peticiones AJAX para cargar competidores sin recargar la página
+    if (isset($_GET['ajax_comp']) && $_GET['ajax_comp'] === '1') {
+        header('Content-Type: text/html; charset=utf-8');
+        if (!empty($competidores)) {
+            echo '<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-8">';
+            // Limitar a mostrar solo los primeros 600 competidores para evitar sobrecargar la interfaz
+            foreach (array_slice($competidores, 0, 600) as $c) {
+?>
+                <article class="card-espectacular">
+                    <div class="card-image-container">
+                        <?php if (!empty($c['imagen'])): ?>
+                            <img src="<?= htmlspecialchars($c['imagen']) ?>" alt="<?= htmlspecialchars($c['modelo'] ?? '') ?>" class="card-image">
+                        <?php else: ?>
+                            <div class="w-full h-full bg-gradient-to-br from-gray-100 to-gray-200 flex items-center justify-center">
+                                <span class="text-gray-600 font-bold text-lg">Moto Radar</span>
+                            </div>
+                        <?php endif; ?>
+
+                        <div class="card-overlay"></div>
+                        <div class="card-badge flex flex-col gap-2">
+                            <?php if (!empty($c['marca'])): ?>
+                                <span class="card-source"><?= htmlspecialchars($c['marca']) ?></span>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+
+                    <div class="card-content">
+                        <h3 class="card-title"><?= htmlspecialchars($c['modelo'] ?? '') ?></h3>
+                        <div class="card-date">
+                            <span><?= htmlspecialchars($c['precio'] ?? '') ?></span>
+                        </div>
+                        <?php if (!empty($c['link'])): ?>
+                            <a href="<?= htmlspecialchars($c['link']) ?>" target="_blank" class="card-link">Ver oferta →</a>
+                        <?php endif; ?>
+                    </div>
+                </article>
+<?php
+            }
+            echo '</div>';
+        } else {
+            // No mostrar mensaje; dejar el contenedor vacío si no hay competidores
+            echo '';
+        }
+        exit;
+    }
+}
+
+?>
 
 <!DOCTYPE html>
 <html lang="es">
@@ -361,7 +355,6 @@ if (file_exists($logoFile)) {
         }
 
         .card-description {
-            /* color: #4b5563; */
             color: #4b5563;
             font-size: 1rem;
             line-height: 1.6;
@@ -430,6 +423,23 @@ if (file_exists($logoFile)) {
             box-shadow: 0 8px 20px rgba(0, 0, 0, 0.15);
         }
 
+        /* Estilo para resaltar la marca seleccionada en la lista */
+        .brand-list .brand-option {
+            padding: 6px 8px;
+            border-radius: 8px;
+        }
+
+        .brand-input {
+            accent-color: #065f46;
+        }
+
+        .brand-input:checked+.brand-label {
+            background: #065f46;
+            color: #fff;
+            padding: 6px 10px;
+            border-radius: 8px;
+        }
+
         .pagination-btn {
             padding: 10px 18px;
             border-radius: 50px;
@@ -486,92 +496,6 @@ if (file_exists($logoFile)) {
             margin-top: 28px;
             font-size: 13px
         }
-
-        /* Estilos para lista de marcas (radios mejoradas) */
-        .brand-list {
-            display: grid;
-            grid-template-columns: 1fr; /* Forzamos columna única para evitar scroll horizontal */
-            gap: 8px;
-            max-height: 260px;
-            overflow-y: auto;
-            padding: 8px;
-            border-radius: 8px;
-            background: #ffffff;
-            box-sizing: border-box;
-        }
-
-        .brand-list::-webkit-scrollbar {
-            width: 8px;
-            height: 8px;
-        }
-
-        .brand-list::-webkit-scrollbar-thumb {
-            background: rgba(6,95,70,0.12);
-            border-radius: 8px;
-        }
-
-        .brand-option {
-            display: block;
-            position: relative;
-            min-width: 0;
-        }
-
-        .brand-input {
-            position: absolute !important;
-            clip: rect(1px, 1px, 1px, 1px);
-            height: 1px;
-            width: 1px;
-            overflow: hidden;
-            white-space: nowrap;
-            border: 0;
-            padding: 0;
-            margin: -1px;
-        }
-
-        .brand-label {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 10px 12px;
-            border-radius: 10px;
-            border: 1px solid #e6f4ef;
-            cursor: pointer;
-            transition: all 0.12s ease;
-            font-weight: 600;
-            color: #064e3b;
-            background: linear-gradient(180deg, #ffffff, #f8fdf9);
-            width: 100%;
-            box-sizing: border-box;
-            white-space: normal;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .brand-label:hover {
-            box-shadow: 0 6px 18px rgba(6,95,70,0.06);
-        }
-
-        /* Indicador visual de selección: usamos el input:checked + label */
-        .brand-input:checked + .brand-label {
-            background: linear-gradient(90deg, #065f46, #10b981);
-            color: #fff;
-            border-color: rgba(255,255,255,0.12);
-            box-shadow: 0 8px 24px rgba(6,95,70,0.14);
-        }
-
-        .brand-circle {
-            width: 14px;
-            height: 14px;
-            border-radius: 50%;
-            border: 2px solid #9ae6b4;
-            background: #fff;
-            flex-shrink: 0;
-        }
-
-        .brand-input:checked + .brand-label .brand-circle {
-            background: rgba(255,255,255,0.95);
-            border-color: rgba(255,255,255,0.95);
-        }
     </style>
 
 </head>
@@ -581,10 +505,8 @@ if (file_exists($logoFile)) {
     <!-- HEADER -->
     <header class="bg-white border-b border-green-200 shadow-sm relative">
         <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
-            <!-- <div class="flex items-center gap-4"> -->
-            <div class="flex items-center space-x-4">
-                <!-- <img src="logo.png" class="h-10 rounded-lg shadow-sm"> -->
-                <img src="logo.png" alt="icono" width="70" height="70" class="object-contain">
+            <div class="flex items-center gap-4">
+                <img src="logo.ico" class="h-10 rounded-lg shadow-sm">
                 <div>
                     <h1 class="heading-font text-xl font-bold text-green-800 tracking-wide">
                         Moto Radar
@@ -646,51 +568,14 @@ if (file_exists($logoFile)) {
         document.addEventListener('DOMContentLoaded', function() {
             const notificationButton = document.getElementById('notificationButton');
             const notificationDropdown = document.getElementById('notificationDropdown');
-            let notificationTimer = null;
-            const AUTO_CLOSE_MS = 3500; // Automatico en 3.5 segundo
-            if (notificationButton && notificationDropdown) {
-                notificationButton.addEventListener('click', function(e) {
-                    e.stopPropagation();
-                    const wasHidden = notificationDropdown.classList.contains('hidden');
-                    notificationDropdown.classList.toggle('hidden');
-                    // clear any previous timer
-                    if (notificationTimer) {
-                        clearTimeout(notificationTimer);
-                        notificationTimer = null;
-                    }
-                    // if we just opened it, start auto-close timer
-                    if (wasHidden) {
-                        notificationTimer = setTimeout(function() {
-                            notificationDropdown.classList.add('hidden');
-                            notificationTimer = null;
-                        }, AUTO_CLOSE_MS);
-                    }
-                });
-                // If user clicks a notification link, start/refresh the auto-close timer
-                notificationDropdown.addEventListener('click', function(event) {
-                    const link = event.target.closest('a');
-                    if (link) {
-                        if (notificationTimer) {
-                            clearTimeout(notificationTimer);
-                            notificationTimer = null;
-                        }
-                        notificationTimer = setTimeout(function() {
-                            notificationDropdown.classList.add('hidden');
-                            notificationTimer = null;
-                        }, AUTO_CLOSE_MS);
-                    }
-                });
-                // clicking outside closes immediately and cancels timer
-                document.addEventListener('click', function(event) {
-                    if (!notificationButton.contains(event.target) && !notificationDropdown.contains(event.target)) {
-                        notificationDropdown.classList.add('hidden');
-                        if (notificationTimer) {
-                            clearTimeout(notificationTimer);
-                            notificationTimer = null;
-                        }
-                    }
-                });
-            }
+            notificationButton.addEventListener('click', function() {
+                notificationDropdown.classList.toggle('hidden');
+            });
+            document.addEventListener('click', function(event) {
+                if (!notificationButton.contains(event.target) && !notificationDropdown.contains(event.target)) {
+                    notificationDropdown.classList.add('hidden');
+                }
+            });
         });
     </script>
 
@@ -713,13 +598,13 @@ if (file_exists($logoFile)) {
             z-index: 9999;
         }
     </style>
-    
     <!-- FIN DE NOTIFICACIONES -->
     <!-- Botones de categorías -->
-    <div class="container mt-6 text-center">
+    <div class="container mt-6 flex flex-wrap justify-center gap-2">
         <a href="?categoria=noticias" class="category-btn <?= $categoriaSeleccionada === 'noticias' ? 'bg-green-600 text-white' : 'bg-white text-green-600 border-2 border-green-600' ?>">Noticias</a>
         <a href="?categoria=blog" class="category-btn <?= $categoriaSeleccionada === 'blog' ? 'bg-green-700 text-white' : 'bg-white text-green-700 border-2 border-green-700' ?>">Blog</a>
         <a href="?categoria=comercial" class="category-btn <?= $categoriaSeleccionada === 'comercial' ? 'bg-green-800 text-white' : 'bg-white text-green-800 border-2 border-green-800' ?>">Comercial</a>
+        <a href="?categoria=precio" class="category-btn <?= $categoriaSeleccionada === 'precio' ? 'bg-green-900 text-white' : 'bg-white text-green-900 border-2 border-green-900' ?>">Precio</a>
     </div>
 
     <!-- Contenido dinámico -->
@@ -780,127 +665,145 @@ if (file_exists($logoFile)) {
                     <?php endforeach; ?>
                 </div>
             <?php else: ?>
-                <div class="empty-state">
-                    <div class="text-6xl mb-4">📰</div>
-                    <p class="text-lg font-medium text-gray-700">No se encontraron noticias de hoy</p>
-                    <p class="text-sm text-gray-500">Intenta más tarde o revisa otras fuentes</p>
-                    <div class="mt-6">
-                        <a href="#historial" class="inline-flex items-center gap-2 text-green-600 font-bold hover:text-green-700">
-                            Ver historial de noticias
-                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
-                            </svg>
-                        </a>
-                    </div>
-                </div>
-            <?php endif; ?>
-        </div>
-        <!-- Paginación para sección principal (comercial) -->
-        <?php if ($categoriaSeleccionada === 'comercial' && $totalMainPages > 1): ?>
-            <div class="mt-8 flex justify-center items-center space-x-3">
-                <?php if ($paginaMain > 1): ?>
-                    <a href="?categoria=<?= urlencode($categoriaSeleccionada) ?>&pagina_main=<?= $paginaMain - 1 ?>" class="pagination-btn bg-white text-gray-700 border border-gray-300 hover:border-green-500 hover:text-green-600">
-                        ← Anterior
-                    </a>
-                <?php endif; ?>
-
-                <?php for ($pm = 1; $pm <= $totalMainPages; $pm++): ?>
-                    <a href="?categoria=<?= urlencode($categoriaSeleccionada) ?>&pagina_main=<?= $pm ?>"
-                        class="pagination-btn <?= $pm === $paginaMain ? 'bg-green-600 text-white active' : 'bg-white text-gray-700 border border-gray-300 hover:border-green-500 hover:text-green-600' ?>">
-                        <?= $pm ?>
-                    </a>
-                <?php endfor; ?>
-
-                <?php if ($paginaMain < $totalMainPages): ?>
-                    <a href="?categoria=<?= urlencode($categoriaSeleccionada) ?>&pagina_main=<?= $paginaMain + 1 ?>" class="pagination-btn bg-white text-gray-700 border border-gray-300 hover:border-green-500 hover:text-green-600">
-                        Siguiente →
-                    </a>
-                <?php endif; ?>
-            </div>
-        <?php endif; ?>
-
-        <!-- Si es comercial mostrar menú de marcas y panel lateral, luego Principales competidores -->
-        
-<?php if ($categoriaSeleccionada === 'comercial'): ?>
-    <h2 class="heading-font text-3xl font-bold text-gray-800 mb-8 flex items-center">
-        <span class="bg-gray-400 w-2 h-8 rounded-full mr-3"></span>
-        Principales Competidores
-    </h2>
-    
-    <div class="mb-8 flex flex-col md:flex-row gap-6">
-        <!-- Sidebar vertical para la marca -->
-        <div class="md:w-64 flex-shrink-0">
-            <form id="marcaForm" method="get" class="bg-white p-4 rounded-lg shadow-sm">
-                <input type="hidden" name="categoria" value="comercial">
-                <label for="marca" class="font-semibold block mb-2">Marca:</label>
-                <div id="marca" class="w-full mb-3">
-                    <div class="brand-list border">
-                        <?php foreach ($marcas as $idx => $m): ?>
-                        <div class="brand-option">
-                            <input id="marca_<?= $idx ?>" class="brand-input" type="radio" name="marca" value="<?= htmlspecialchars($m) ?>" <?= $m === $selectedMarca ? 'checked' : '' ?>>
-                            <label class="brand-label" for="marca_<?= $idx ?>">
-                                <span class="brand-circle" aria-hidden="true"></span>
-                                <span><?= htmlspecialchars($m) ?></span>
-                            </label>
+                <?php if ($categoriaSeleccionada !== 'precio'): ?>
+                    <div class="empty-state">
+                        <div class="text-6xl mb-4">📰</div>
+                        <p class="text-lg font-medium text-gray-700">No se encontraron noticias de hoy</p>
+                        <p class="text-sm text-gray-500">Intenta más tarde o revisa otras fuentes</p>
+                        <div class="mt-6">
+                            <a href="#historial" class="inline-flex items-center gap-2 text-green-600 font-bold hover:text-green-700">
+                                Ver historial de noticias
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                </svg>
+                            </a>
                         </div>
-                        <?php endforeach; ?>
                     </div>
-                </div>
-                <noscript>
-                    <button type="submit" class="w-full pagination-btn">Ver</button>
-                </noscript>
-            </form>
+                <?php endif; ?>
+            <?php endif; ?>
         </div>
 
-        <!-- Contenido horizontal -->
-        <div class="flex-1">
-            <div id="competidoresContainer">
-            <?php if (!empty($competidores)): ?>
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-                    <?php foreach ($competidores as $c): ?>
-                        <article class="card-espectacular">
-                            <div class="card-image-container">
-                                <?php if (!empty($c['imagen'])): ?>
-                                    <img src="<?= htmlspecialchars($c['imagen']) ?>" alt="<?= htmlspecialchars($c['modelo'] ?? '') ?>" class="card-image">
-                                <?php else: ?>
-                                    <div class="w-full h-full bg-gradient-to-br from-gray-100 to-gray-200 flex items-center justify-center">
-                                        <span class="text-gray-600 font-bold text-lg">Moto Radar</span>
+        <!-- Historial -->
+        <?php if ($categoriaSeleccionada === 'precio'): ?>
+            <h2 class="heading-font text-3xl font-bold text-gray-800 mb-8 flex items-center">
+                <span class="bg-gray-400 w-2 h-8 rounded-full mr-3"></span>
+                Principales Competidores
+            </h2>
+
+            <div class="mb-8 flex flex-col md:flex-row gap-6">
+                <!-- Sidebar vertical para la marca -->
+                <div class="md:w-64 flex-shrink-0">
+                    <form id="marcaForm" method="get" class="bg-white p-4 rounded-lg shadow-sm">
+                        <input type="hidden" name="categoria" value="precio">
+                        <label for="marca" class="font-semibold block mb-2">Marca:</label>
+                        <input id="marcaSearch" type="search" placeholder="Buscar marca..." class="w-full px-3 py-2 mb-3 border rounded text-sm" />
+
+                        <div id="marca" class="w-full mb-3">
+                            <div class="brand-list max-h-64 overflow-auto p-2 space-y-2">
+                                <?php foreach ($marcas as $idx => $m): ?>
+                                    <div class="brand-option">
+                                        <input id="marca_<?= $idx ?>" class="brand-input sr-only" type="radio" name="marca" value="<?= htmlspecialchars($m) ?>" <?= $m === $selectedMarca ? 'checked' : '' ?>>
+                                        <label class="brand-label flex items-center gap-3 px-3 py-2 rounded hover:bg-green-50 cursor-pointer" for="marca_<?= $idx ?>">
+                                            <span class="w-5 h-5 rounded-full border border-green-300 flex items-center justify-center text-xs"></span>
+                                            <span class="text-sm font-medium"><?= htmlspecialchars($m) ?></span>
+                                        </label>
                                     </div>
-                                <?php endif; ?>
-                                <div class="card-overlay"></div>
-                                <div class="card-badge flex flex-col gap-2">
-                                    <?php if (!empty($c['marca'])): ?>
-                                        <span class="card-source"><?= htmlspecialchars($c['marca']) ?></span>
-                                    <?php endif; ?>
-                                </div>
+                                <?php endforeach; ?>
                             </div>
-                            
-                            <div class="card-content">
-                                <h3 class="card-title"><?= htmlspecialchars($c['modelo'] ?? '') ?></h3>
-                                <div class="card-date">
-                                    <span><?= htmlspecialchars($c['precio'] ?? '') ?></span>
-                                </div>
-                                <?php if (!empty($c['link'])): ?>
-                                    <a href="<?= htmlspecialchars($c['link']) ?>" target="_blank" class="card-link">Ver oferta →</a>
-                                <?php endif; ?>
-                            </div>
-                        </article>
-                    <?php endforeach; ?>
+                        </div>
+
+                        <noscript>
+                            <button type="submit" class="w-full pagination-btn">Ver</button>
+                        </noscript>
+                    </form>
+                    <script>
+                        (function() {
+                            var search = document.getElementById('marcaSearch');
+                            if (!search) return;
+                            var list = document.querySelectorAll('#marca .brand-option');
+                            search.addEventListener('input', function() {
+                                var q = this.value.toLowerCase().trim();
+                                list.forEach(function(item) {
+                                    var label = item.querySelector('.brand-label span:nth-child(2)');
+                                    var text = label ? label.textContent.toLowerCase() : '';
+                                    item.style.display = text.indexOf(q) === -1 ? 'none' : '';
+                                });
+                            });
+                        })();
+                    </script>
                 </div>
-            <?php else: ?>
-                <div class="bg-white p-4 rounded-lg text-sm text-gray-600">Selecciona una marca para ver detalles</div>
-            <?php endif; ?>
+
+                <!-- Contenido horizontal -->
+                <div class="flex-1">
+                    <div id="competidoresContainer">
+                        <?php if (!empty($competidores)): ?>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-8">
+                                <?php foreach (array_slice($competidores, 0, 600) as $c): ?>
+                                    <article class="card-espectacular">
+                                        <div class="card-image-container">
+                                            <?php if (!empty($c['imagen'])): ?>
+                                                <img src="<?= htmlspecialchars($c['imagen']) ?>" alt="<?= htmlspecialchars($c['modelo'] ?? '') ?>" class="card-image">
+                                            <?php else: ?>
+                                                <div class="w-full h-full bg-gradient-to-br from-gray-100 to-gray-200 flex items-center justify-center">
+                                                    <span class="text-gray-600 font-bold text-lg">Moto Radar</span>
+                                                </div>
+                                            <?php endif; ?>
+
+                                            <div class="card-overlay"></div>
+                                            <div class="card-badge flex flex-col gap-2">
+                                                <?php if (!empty($c['marca'])): ?>
+                                                    <span class="card-source"><?= htmlspecialchars($c['marca']) ?></span>
+                                                <?php endif; ?>
+                                            </div>
+                                        </div>
+
+                                        <div class="card-content">
+                                            <h3 class="card-title"><?= htmlspecialchars($c['modelo'] ?? '') ?></h3>
+                                            <div class="card-date">
+                                                <span><?= htmlspecialchars($c['precio'] ?? '') ?></span>
+                                            </div>
+                                            <?php if (!empty($c['link'])): ?>
+                                                <a href="<?= htmlspecialchars($c['link']) ?>" target="_blank" class="card-link">Ver oferta →</a>
+                                            <?php endif; ?>
+                                        </div>
+                                    </article>
+                                <?php endforeach; ?>
+                            </div>
+                        <?php else: ?>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-8"></div>
+                        <?php endif; ?>
+                    </div>
+                </div>
             </div>
-        </div>
-    </div>
-<?php endif; ?>
-        
-        
-        <?php if ($categoriaSeleccionada !== 'comercial'): ?>
+    
+            <script>
+                document.addEventListener('DOMContentLoaded', function() {
+                    document.querySelectorAll('.brand-input').forEach(function(radio) {
+                        radio.addEventListener('change', function() {
+                            var marca = this.value;
+                            var params = new URLSearchParams({
+                                categoria: 'precio',
+                                ajax_comp: '1',
+                                marca: marca
+                            });
+                            fetch(window.location.pathname + '?' + params.toString())
+                                .then(function(res) {
+                                    return res.text();
+                                })
+                                .then(function(html) {
+                                    var container = document.getElementById('competidoresContainer');
+                                    if (container) container.innerHTML = html;
+                                });
+                        });
+                    });
+                });
+            </script>
+        <?php endif; ?>
+        <?php if ($categoriaSeleccionada !== 'precio'): ?>
             <div id="historial">
                 <h2 class="heading-font text-3xl font-bold text-gray-800 mb-8 flex items-center">
                     <span class="bg-gray-400 w-2 h-8 rounded-full mr-3"></span>
-                    <?= htmlspecialchars($histTitle) ?> — <?= ucfirst($categoriaSeleccionada) ?> anteriores
+                    Historial — <?= ucfirst($categoriaSeleccionada) ?> anteriores
                 </h2>
 
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
@@ -974,7 +877,6 @@ if (file_exists($logoFile)) {
                     </div>
                 <?php endif; ?>
             </div>
-        <?php endif; ?>
     </div>
 
     <!-- FOOTER -->
@@ -1001,46 +903,7 @@ if (file_exists($logoFile)) {
             }
         }
     </style>
-    <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            const marcaWrapper = document.getElementById('marca');
-            const radios = marcaWrapper ? marcaWrapper.querySelectorAll('input[name="marca"]') : null;
-            const container = document.getElementById('competidoresContainer');
-            if (!radios || !container) return;
-
-            function loadForMarca(marca) {
-                const params = new URLSearchParams();
-                params.set('categoria', 'comercial');
-                if (marca) params.set('marca', marca);
-                params.set('ajax_comp', '1');
-
-                fetch(window.location.pathname + '?' + params.toString(), { credentials: 'same-origin' })
-                    .then(function(res) { return res.text(); })
-                    .then(function(html) {
-                        const trimmed = html.trim();
-                        if (trimmed.startsWith('<article') || trimmed.includes('card-espectacular')) {
-                            container.innerHTML = '<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">' + html + '</div>';
-                        } else {
-                            container.innerHTML = html;
-                        }
-                    })
-                    .catch(function(err) {
-                        console.error('Error cargando competidores:', err);
-                    });
-            }
-
-            radios.forEach(function(r) {
-                r.addEventListener('click', function() {
-                    loadForMarca(this.value);
-                });
-                r.addEventListener('keydown', function(e) {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                        loadForMarca(this.value);
-                    }
-                });
-            });
-        });
-    </script>
 </body>
+<?php endif; ?>
 
 </html>
